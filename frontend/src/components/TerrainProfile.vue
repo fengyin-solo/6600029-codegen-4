@@ -1,9 +1,33 @@
 <script setup lang="ts">
-import { ref, onMounted, watch, nextTick } from 'vue';
+import { ref, onMounted, watch, nextTick, computed } from 'vue';
 import { useDroneStore } from '../store/drone';
+import { riskToColor, riskLevelLabel } from '../utils/pathfinding';
+import type { TerrainRiskLevel } from '../types';
 
 const store = useDroneStore();
 const canvas = ref<HTMLCanvasElement>();
+
+function classifyTerrainRisk(
+  elevation: number,
+  flightAltitude: number,
+  safeDistance: number
+): { risk: number; level: TerrainRiskLevel } {
+  const risk = Math.max(0, Math.min(1, elevation / Math.max(flightAltitude, 1)));
+  const collideThreshold = flightAltitude - safeDistance;
+  let level: TerrainRiskLevel;
+  if (elevation >= collideThreshold) level = 'critical';
+  else if (risk >= 0.75) level = 'high';
+  else if (risk >= 0.5) level = 'caution';
+  else level = 'safe';
+  return { risk, level };
+}
+
+const riskProfile = computed(() => {
+  return store.terrainProfile.map((p) => ({
+    ...p,
+    ...classifyTerrainRisk(p.terrainElevation, store.flightAltitude, store.droneConfig.safeDistance),
+  }));
+});
 
 function draw() {
   const ctx = canvas.value?.getContext('2d');
@@ -17,11 +41,10 @@ function draw() {
 
   ctx.clearRect(0, 0, W, H);
 
-  // Background
   ctx.fillStyle = '#1e293b';
   ctx.fillRect(0, 0, W, H);
 
-  const profile = store.terrainProfile;
+  const profile = riskProfile.value;
   if (profile.length < 2) {
     ctx.fillStyle = '#94a3b8';
     ctx.font = '14px sans-serif';
@@ -30,7 +53,6 @@ function draw() {
     return;
   }
 
-  // Compute distances
   const distances: number[] = [0];
   for (let i = 1; i < profile.length; i++) {
     const dx = (profile[i].lng - profile[i - 1].lng) * 111000;
@@ -39,7 +61,6 @@ function draw() {
   }
   const maxDist = distances[distances.length - 1] || 1;
 
-  // Find altitude range
   let minAlt = Infinity;
   let maxAlt = -Infinity;
   for (const p of profile) {
@@ -53,52 +74,86 @@ function draw() {
   const toX = (d: number) => padding.left + (d / maxDist) * plotW;
   const toY = (a: number) => padding.top + plotH - ((a - minAlt) / altRange) * plotH;
 
-  // Draw terrain fill
+  // Draw terrain with risk-based coloring (segment by segment)
+  for (let i = 0; i < profile.length - 1; i++) {
+    const p1 = profile[i];
+    const p2 = profile[i + 1];
+    const color = riskToColor(p1.risk);
+
+    ctx.beginPath();
+    ctx.moveTo(toX(distances[i]), toY(p1.terrainElevation));
+    ctx.lineTo(toX(distances[i + 1]), toY(p2.terrainElevation));
+    ctx.lineTo(toX(distances[i + 1]), padding.top + plotH);
+    ctx.lineTo(toX(distances[i]), padding.top + plotH);
+    ctx.closePath();
+    ctx.fillStyle = color + '66';
+    ctx.fill();
+  }
+
+  // Draw terrain outline
   ctx.beginPath();
   ctx.moveTo(toX(distances[0]), toY(profile[0].terrainElevation));
   for (let i = 1; i < profile.length; i++) {
     ctx.lineTo(toX(distances[i]), toY(profile[i].terrainElevation));
   }
-  ctx.lineTo(toX(distances[distances.length - 1]), padding.top + plotH);
-  ctx.lineTo(toX(0), padding.top + plotH);
-  ctx.closePath();
-  ctx.fillStyle = 'rgba(139,92,46,0.6)';
-  ctx.fill();
   ctx.strokeStyle = '#92613a';
+  ctx.lineWidth = 1.5;
+  ctx.stroke();
+
+  // Draw safe distance line
+  const safeAlt = store.flightAltitude - store.droneConfig.safeDistance;
+  ctx.setLineDash([4, 4]);
+  ctx.beginPath();
+  ctx.moveTo(padding.left, toY(safeAlt));
+  ctx.lineTo(padding.left + plotW, toY(safeAlt));
+  ctx.strokeStyle = 'rgba(239, 68, 68, 0.5)';
   ctx.lineWidth = 1;
   ctx.stroke();
+  ctx.setLineDash([]);
 
-  // Draw safe distance gap (green shading)
+  // Draw flight altitude line
+  ctx.setLineDash([2, 4]);
   ctx.beginPath();
-  ctx.moveTo(toX(distances[0]), toY(profile[0].terrainElevation));
-  for (let i = 1; i < profile.length; i++) {
-    ctx.lineTo(toX(distances[i]), toY(profile[i].terrainElevation));
-  }
-  for (let i = profile.length - 1; i >= 0; i--) {
-    ctx.lineTo(toX(distances[i]), toY(profile[i].altitude));
-  }
-  ctx.closePath();
-  ctx.fillStyle = 'rgba(34,197,94,0.1)';
-  ctx.fill();
-
-  // Draw flight path
-  ctx.beginPath();
-  ctx.moveTo(toX(distances[0]), toY(profile[0].altitude));
-  for (let i = 1; i < profile.length; i++) {
-    ctx.lineTo(toX(distances[i]), toY(profile[i].altitude));
-  }
-  ctx.strokeStyle = '#3b82f6';
-  ctx.lineWidth = 2;
+  ctx.moveTo(padding.left, toY(store.flightAltitude));
+  ctx.lineTo(padding.left + plotW, toY(store.flightAltitude));
+  ctx.strokeStyle = 'rgba(251, 191, 36, 0.5)';
+  ctx.lineWidth = 1;
   ctx.stroke();
+  ctx.setLineDash([]);
+
+  // Draw flight path with risk coloring
+  for (let i = 0; i < profile.length - 1; i++) {
+    const p1 = profile[i];
+    const p2 = profile[i + 1];
+    const color = riskToColor(p1.risk);
+    const isDanger = p1.level === 'high' || p1.level === 'critical';
+
+    ctx.beginPath();
+    ctx.moveTo(toX(distances[i]), toY(p1.altitude));
+    ctx.lineTo(toX(distances[i + 1]), toY(p2.altitude));
+    ctx.strokeStyle = color;
+    ctx.lineWidth = isDanger ? 3 : 2;
+    if (p1.level === 'critical') {
+      ctx.setLineDash([8, 4]);
+    } else if (p1.level === 'high') {
+      ctx.setLineDash([4, 3]);
+    } else {
+      ctx.setLineDash([]);
+    }
+    ctx.stroke();
+    ctx.setLineDash([]);
+  }
 
   // Draw waypoint dots
   for (let i = 0; i < profile.length; i++) {
+    const p = profile[i];
+    const color = riskToColor(p.risk);
     ctx.beginPath();
-    ctx.arc(toX(distances[i]), toY(profile[i].altitude), 4, 0, Math.PI * 2);
-    ctx.fillStyle = '#60a5fa';
+    ctx.arc(toX(distances[i]), toY(p.altitude), 4, 0, Math.PI * 2);
+    ctx.fillStyle = color;
     ctx.fill();
-    ctx.strokeStyle = '#1d4ed8';
-    ctx.lineWidth = 1;
+    ctx.strokeStyle = '#0f172a';
+    ctx.lineWidth = 1.5;
     ctx.stroke();
   }
 
@@ -141,20 +196,38 @@ function draw() {
     ctx.stroke();
   }
 
+  // Altitude labels
+  ctx.textAlign = 'left';
+  ctx.fillStyle = 'rgba(251, 191, 36, 0.8)';
+  ctx.font = '10px sans-serif';
+  ctx.fillText(`巡航 ${store.flightAltitude}m`, padding.left + plotW - 80, toY(store.flightAltitude) - 4);
+  ctx.fillStyle = 'rgba(239, 68, 68, 0.8)';
+  ctx.fillText(`安全线 ${safeAlt}m`, padding.left + plotW - 80, toY(safeAlt) - 4);
+
   // Legend
   ctx.textAlign = 'left';
-  ctx.fillStyle = '#3b82f6';
-  ctx.fillRect(padding.left + 10, padding.top + 4, 12, 3);
-  ctx.fillStyle = '#94a3b8';
-  ctx.fillText('飞行高度', padding.left + 26, padding.top + 10);
-  ctx.fillStyle = 'rgba(139,92,46,0.8)';
-  ctx.fillRect(padding.left + 90, padding.top + 2, 12, 8);
-  ctx.fillStyle = '#94a3b8';
-  ctx.fillText('地形', padding.left + 106, padding.top + 10);
+  const legendY = padding.top + 4;
+  const levels = [
+    { level: 'safe' as TerrainRiskLevel, label: '安全' },
+    { level: 'caution' as TerrainRiskLevel, label: '注意' },
+    { level: 'high' as TerrainRiskLevel, label: '高危' },
+    { level: 'critical' as TerrainRiskLevel, label: '危险' },
+  ];
+  let legendX = padding.left + 10;
+  for (const { level, label } of levels) {
+    const color = riskToColor(level === 'safe' ? 0.1 : level === 'caution' ? 0.4 : level === 'high' ? 0.7 : 0.95);
+    ctx.fillStyle = color;
+    ctx.fillRect(legendX, legendY - 3, 12, 8);
+    ctx.fillStyle = '#94a3b8';
+    ctx.font = '10px sans-serif';
+    ctx.fillText(label, legendX + 16, legendY + 5);
+    legendX += 70;
+  }
 }
 
 onMounted(() => nextTick(draw));
-watch(() => store.terrainProfile, draw, { deep: true });
+watch(() => riskProfile.value, draw, { deep: true });
+watch(() => store.flightAltitude, draw);
 </script>
 
 <template>

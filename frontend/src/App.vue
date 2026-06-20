@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { onMounted } from 'vue';
+import { onMounted, computed } from 'vue';
 import MapView from './components/MapView.vue';
 import TerrainProfile from './components/TerrainProfile.vue';
 import FlightStats from './components/FlightStats.vue';
@@ -17,6 +17,30 @@ function handlePlanRoute() {
   const last = store.waypoints[store.waypoints.length - 1];
   store.planRoute([first.lat, first.lng], [last.lat, last.lng]);
 }
+
+const safeZonePercent = computed(() => {
+  const total = store.terrainRiskPoints.length || 1;
+  const count = store.terrainRiskPoints.filter(p => p.level === 'safe').length;
+  return Math.round((count / total) * 100);
+});
+
+const cautionZonePercent = computed(() => {
+  const total = store.terrainRiskPoints.length || 1;
+  const count = store.terrainRiskPoints.filter(p => p.level === 'caution').length;
+  return Math.round((count / total) * 100);
+});
+
+const highZonePercent = computed(() => {
+  const total = store.terrainRiskPoints.length || 1;
+  const count = store.terrainRiskPoints.filter(p => p.level === 'high').length;
+  return Math.round((count / total) * 100);
+});
+
+const criticalZonePercent = computed(() => {
+  const total = store.terrainRiskPoints.length || 1;
+  const count = store.terrainRiskPoints.filter(p => p.level === 'critical').length;
+  return Math.round((count / total) * 100);
+});
 </script>
 
 <template>
@@ -74,6 +98,80 @@ function handlePlanRoute() {
                 RRT 随机树
               </div>
             </label>
+          </div>
+        </div>
+
+        <!-- Terrain risk heatmap -->
+        <div class="bg-slate-800 rounded-lg p-3">
+          <h3 class="text-xs font-semibold text-orange-400 mb-2 flex items-center gap-1">
+            <span>🔥</span>
+            <span>地形风险热力图</span>
+          </h3>
+          <div class="space-y-3">
+            <div>
+              <div class="flex justify-between text-[10px] text-slate-400 mb-1">
+                <span>巡航高度</span>
+                <span class="text-orange-400 font-semibold">{{ store.flightAltitude }} m</span>
+              </div>
+              <input
+                type="range"
+                min="30"
+                max="300"
+                step="10"
+                v-model.number="store.flightAltitude"
+                class="w-full accent-orange-500"
+              />
+              <div class="flex justify-between text-[9px] text-slate-500 mt-0.5">
+                <span>30m 低空</span>
+                <span>300m 高空</span>
+              </div>
+            </div>
+
+            <!-- Risk distribution -->
+            <div class="bg-slate-900 rounded p-2 space-y-1.5">
+              <div class="text-[10px] text-slate-400 mb-1">风险分布</div>
+              <div class="flex items-center gap-1">
+                <span class="w-2 h-2 rounded-full bg-green-500"></span>
+                <span class="text-[10px] text-slate-300 w-8">安全</span>
+                <div class="flex-1 bg-slate-700 rounded-full h-1.5 overflow-hidden">
+                  <div class="h-full bg-green-500 rounded-full" :style="{ width: safeZonePercent + '%' }"></div>
+                </div>
+                <span class="text-[10px] text-slate-400 w-8 text-right">{{ safeZonePercent }}%</span>
+              </div>
+              <div class="flex items-center gap-1">
+                <span class="w-2 h-2 rounded-full bg-yellow-500"></span>
+                <span class="text-[10px] text-slate-300 w-8">注意</span>
+                <div class="flex-1 bg-slate-700 rounded-full h-1.5 overflow-hidden">
+                  <div class="h-full bg-yellow-500 rounded-full" :style="{ width: cautionZonePercent + '%' }"></div>
+                </div>
+                <span class="text-[10px] text-slate-400 w-8 text-right">{{ cautionZonePercent }}%</span>
+              </div>
+              <div class="flex items-center gap-1">
+                <span class="w-2 h-2 rounded-full bg-orange-500"></span>
+                <span class="text-[10px] text-slate-300 w-8">高危</span>
+                <div class="flex-1 bg-slate-700 rounded-full h-1.5 overflow-hidden">
+                  <div class="h-full bg-orange-500 rounded-full" :style="{ width: highZonePercent + '%' }"></div>
+                </div>
+                <span class="text-[10px] text-slate-400 w-8 text-right">{{ highZonePercent }}%</span>
+              </div>
+              <div class="flex items-center gap-1">
+                <span class="w-2 h-2 rounded-full bg-red-500 animate-pulse"></span>
+                <span class="text-[10px] text-slate-300 w-8">危险</span>
+                <div class="flex-1 bg-slate-700 rounded-full h-1.5 overflow-hidden">
+                  <div class="h-full bg-red-500 rounded-full" :style="{ width: criticalZonePercent + '%' }"></div>
+                </div>
+                <span class="text-[10px] text-slate-400 w-8 text-right">{{ criticalZonePercent }}%</span>
+              </div>
+            </div>
+
+            <div class="bg-red-950/50 border border-red-900/50 rounded p-2 flex items-center justify-between">
+              <span class="text-[10px] text-red-300">⚠️ 低空危险区</span>
+              <span class="text-sm font-bold text-red-400">{{ store.dangerZoneCount }} 处</span>
+            </div>
+
+            <p class="text-[9px] text-slate-500 leading-snug">
+              💡 调整巡航高度可实时查看不同高度下的地形风险分布。航线颜色随风险等级联动变化。
+            </p>
           </div>
         </div>
 

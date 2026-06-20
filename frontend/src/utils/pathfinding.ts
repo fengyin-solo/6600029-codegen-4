@@ -1,4 +1,13 @@
-import type { Waypoint, NoFlyZone, TerrainPoint, FlightPlan, DroneConfig } from '../types';
+import type {
+  Waypoint,
+  NoFlyZone,
+  TerrainPoint,
+  FlightPlan,
+  DroneConfig,
+  TerrainRiskPoint,
+  TerrainRiskLevel,
+  RouteSegmentRisk,
+} from '../types';
 
 // ─── Haversine distance ─────────────────────────────────────────────────────
 export function haversine(lat1: number, lng1: number, lat2: number, lng2: number): number {
@@ -312,6 +321,120 @@ export function checkTerrainCollision(
   }
 
   return { safe: collisions.length === 0, collisions };
+}
+
+// ─── Terrain Risk (low-altitude danger zones) ─────────────────────────────
+// Risk models how dangerous a ground location is for a drone cruising at
+// `flightAltitude` (m AGL). Terrain whose elevation approaches or exceeds the
+// flight altitude forms "low-altitude danger zones" with high collision risk.
+
+const clamp01 = (v: number) => Math.max(0, Math.min(1, v));
+
+export function riskToColor(risk: number): string {
+  const r = clamp01(risk);
+  if (r < 0.25) return '#22c55e'; // safe   (green)
+  if (r < 0.5) return '#eab308';  // caution (yellow)
+  if (r < 0.75) return '#f97316'; // high    (orange)
+  return '#ef4444';               // critical (red)
+}
+
+export function riskLevelLabel(level: TerrainRiskLevel): string {
+  switch (level) {
+    case 'safe': return '安全';
+    case 'caution': return '注意';
+    case 'high': return '高危';
+    case 'critical': return '危险';
+  }
+}
+
+function classifyRisk(
+  elevation: number,
+  flightAltitude: number,
+  safeDistance: number
+): { risk: number; level: TerrainRiskLevel } {
+  const risk = clamp01(elevation / Math.max(flightAltitude, 1));
+  // Anything within the safe-distance margin of the flight altitude collides.
+  const collideThreshold = flightAltitude - safeDistance;
+  let level: TerrainRiskLevel;
+  if (elevation >= collideThreshold) level = 'critical';
+  else if (risk >= 0.75) level = 'high';
+  else if (risk >= 0.5) level = 'caution';
+  else level = 'safe';
+  return { risk, level };
+}
+
+// Nearest-neighbour elevation lookup (mirrors existing terrainProfile logic).
+export function getTerrainElevationAt(
+  lat: number,
+  lng: number,
+  terrain: TerrainPoint[]
+): number {
+  let nearest = 0;
+  let minDist = Infinity;
+  for (const tp of terrain) {
+    const d = (tp.lat - lat) ** 2 + (tp.lng - lng) ** 2;
+    if (d < minDist) {
+      minDist = d;
+      nearest = tp.elevation;
+    }
+  }
+  return nearest;
+}
+
+export function computeTerrainRisk(
+  terrain: TerrainPoint[],
+  flightAltitude: number,
+  safeDistance = 30
+): TerrainRiskPoint[] {
+  return terrain.map((tp) => {
+    const { risk, level } = classifyRisk(tp.elevation, flightAltitude, safeDistance);
+    return { ...tp, risk, level };
+  });
+}
+
+// Per-segment risk for route coloring. Samples each segment along the ground
+// and takes the most hazardous sample, also flagging segments that brush a
+// no-fly zone so safety warnings are preserved.
+export function computeRouteSegmentRisks(
+  waypoints: Waypoint[],
+  terrain: TerrainPoint[],
+  flightAltitude: number,
+  safeDistance = 30,
+  noFlyZones: NoFlyZone[] = []
+): RouteSegmentRisk[] {
+  const segments: RouteSegmentRisk[] = [];
+  const samples = 5;
+
+  for (let i = 0; i < waypoints.length - 1; i++) {
+    const a = waypoints[i];
+    const b = waypoints[i + 1];
+
+    let maxElev = 0;
+    let nearZone = false;
+    for (let s = 0; s <= samples; s++) {
+      const t = s / samples;
+      const lat = a.lat + (b.lat - a.lat) * t;
+      const lng = a.lng + (b.lng - a.lng) * t;
+      maxElev = Math.max(maxElev, getTerrainElevationAt(lat, lng, terrain));
+      if (!nearZone) {
+        for (const z of noFlyZones) {
+          if (haversine(lat, lng, z.center[0], z.center[1]) < z.radius * 1.5) {
+            nearZone = true;
+            break;
+          }
+        }
+      }
+    }
+
+    let { risk, level } = classifyRisk(maxElev, flightAltitude, safeDistance);
+    if (nearZone) {
+      risk = 1;
+      level = 'critical';
+    }
+    segments.push({ from: a, to: b, risk, level, color: riskToColor(risk) });
+  }
+
+  return segments;
 }
 
 // ─── KML Export ─────────────────────────────────────────────────────────────

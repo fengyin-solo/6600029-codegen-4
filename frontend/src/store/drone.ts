@@ -10,6 +10,9 @@ import {
   exportKML,
   mockNoFlyZones,
   mockTerrainData,
+  getTerrainElevationAt,
+  computeTerrainRisk,
+  computeRouteSegmentRisks,
 } from '../utils/pathfinding';
 
 export const useDroneStore = defineStore('drone', () => {
@@ -21,6 +24,10 @@ export const useDroneStore = defineStore('drone', () => {
   const isSimulating = ref(false);
   const simProgress = ref(0);
   const mapCenter = ref<[number, number]>([39.9, 116.4]);
+
+  // Terrain risk heatmap state
+  const showTerrainHeatmap = ref(true);
+  const flightAltitude = ref(100); // cruise altitude (m AGL) used for risk
 
   const droneConfig = ref<DroneConfig>({
     maxAltitude: 500,
@@ -126,25 +133,34 @@ export const useDroneStore = defineStore('drone', () => {
 
   const terrainProfile = computed(() => {
     if (waypoints.value.length < 2) return [];
-    return waypoints.value.map((wp) => {
-      let nearestElev = 0;
-      let minDist = Infinity;
-      for (const tp of terrainData.value) {
-        const d =
-          (tp.lat - wp.lat) ** 2 + (tp.lng - wp.lng) ** 2;
-        if (d < minDist) {
-          minDist = d;
-          nearestElev = tp.elevation;
-        }
-      }
-      return {
-        lat: wp.lat,
-        lng: wp.lng,
-        altitude: wp.altitude,
-        terrainElevation: nearestElev,
-      };
-    });
+    return waypoints.value.map((wp) => ({
+      lat: wp.lat,
+      lng: wp.lng,
+      altitude: wp.altitude,
+      terrainElevation: getTerrainElevationAt(wp.lat, wp.lng, terrainData.value),
+    }));
   });
+
+  // Terrain risk heatmap points (low-altitude danger zones).
+  const terrainRiskPoints = computed(() =>
+    computeTerrainRisk(terrainData.value, flightAltitude.value, droneConfig.value.safeDistance)
+  );
+
+  // Per-segment route risk used to color the route by terrain hazard.
+  const routeSegmentRisks = computed(() =>
+    computeRouteSegmentRisks(
+      waypoints.value,
+      terrainData.value,
+      flightAltitude.value,
+      droneConfig.value.safeDistance,
+      noFlyZones.value
+    )
+  );
+
+  // Count of terrain cells flagged as danger zones (high or critical).
+  const dangerZoneCount = computed(
+    () => terrainRiskPoints.value.filter((p) => p.level === 'high' || p.level === 'critical').length
+  );
 
   return {
     waypoints,
@@ -156,10 +172,15 @@ export const useDroneStore = defineStore('drone', () => {
     isSimulating,
     simProgress,
     mapCenter,
+    showTerrainHeatmap,
+    flightAltitude,
     totalDistance,
     estimatedTime,
     batteryPercent,
     terrainProfile,
+    terrainRiskPoints,
+    routeSegmentRisks,
+    dangerZoneCount,
     addWaypoint,
     removeWaypoint,
     updateWaypoint,

@@ -37,3 +37,21 @@ export interface DroneConfig {
   consumptionRate: number;  // mAh/min
   safeDistance: number;     // meters from obstacles
 }
+
+// Terrain risk is how hazardous a ground cell is for a drone cruising at a
+// given altitude: the closer the terrain elevation is to (or above) the
+// flight altitude, the higher the collision risk for low-altitude flight.
+export type TerrainRiskLevel = 'safe' | 'caution' | 'high' | 'critical';
+
+export interface TerrainRiskPoint extends TerrainPoint {
+  risk: number;   // normalized 0..1
+  level: TerrainRiskLevel;
+}
+
+export interface RouteSegmentRisk {
+  from: Waypoint;
+  to: Waypoint;
+  risk: number;   // normalized 0..1
+  level: TerrainRiskLevel;
+  color: string;  // hex color derived from risk
+}
